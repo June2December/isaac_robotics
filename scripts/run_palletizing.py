@@ -1,13 +1,12 @@
-from omni.isaac.kit import SimulationApp
-
 # 1. Isaac Sim 가동
+from omni.isaac.kit import SimulationApp # isaac 으로 import 보다 omni.isaac.kit 제공되는 api 및 exts 로딩하기 편하네
 simulation_app = SimulationApp({"headless": False})
 
 # 2. 익스텐션 활성화
 from omni.isaac.core.utils.extensions import enable_extension
 enable_extension("isaacsim.examples.interactive")
 
-import omni
+import omni # 
 import numpy as np
 from isaacsim.cortex.framework.cortex_world import CortexWorld
 from isaacsim.cortex.behaviors.ur10 import bin_stacking_behavior as behavior
