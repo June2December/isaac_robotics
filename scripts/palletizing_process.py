@@ -9,7 +9,9 @@ enable_extension("isaacsim.examples.interactive")
 enable_extension("isaacsim.asset.gen.conveyor")
 enable_extension("omni.isaac.conveyor") # 모터 제어용 API 익스텐션 추가 강제 활성화
 
-import omni 
+# 가이드 생성용 큐브 임포트 아래에 추가
+from pxr import UsdGeom, Vt, Gf, UsdPhysics
+import omni
 import numpy as np
 import random
 from isaacsim.cortex.framework.cortex_world import CortexWorld
@@ -69,10 +71,47 @@ class CustomConveyorTask(BinStackingTask):
 
             self._spawn_bin(self.on_conveyor)
             self.bins.append(self.on_conveyor)
+# ---------------------------------------------------------
+# 직각삼각기둥(Wedge) 가이드 생성 (두 겹 오류 해결 & 은색 메탈)
+# ---------------------------------------------------------
+def create_wedge_guide(stage, prim_path, position, width_x, length_y, height_z):
+    mesh = UsdGeom.Mesh.Define(stage, prim_path)
+    
+    # 무조건 1x1x1 단위로 생성 (음수 입력 시 도형이 뒤집히는 버그 원천 차단)
+    points = Vt.Vec3fArray([
+        Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0),
+        Gf.Vec3f(0, 0, 1), Gf.Vec3f(1, 0, 1), Gf.Vec3f(0, 1, 1)
+    ])
+    mesh.GetPointsAttr().Set(points)
 
+    # 5개의 면 생성
+    faceVertexCounts = Vt.IntArray([3, 3, 4, 4, 4])
+    faceVertexIndices = Vt.IntArray([
+        0, 1, 2,       # 바닥면
+        3, 5, 4,       # 윗면
+        0, 3, 4, 1,    # X축 방향 벽
+        0, 2, 5, 3,    # Y축 방향 벽
+        1, 4, 5, 2     # 상자가 닿는 빗면
+    ])
+    mesh.GetFaceVertexCountsAttr().Set(faceVertexCounts)
+    mesh.GetFaceVertexIndicesAttr().Set(faceVertexIndices)
+
+    # 위치 이동 및 스케일(크기/방향 반전) 적용
+    xform = UsdGeom.XformCommonAPI(mesh)
+    xform.SetTranslate(position)
+    xform.SetScale(Gf.Vec3f(float(width_x), float(length_y), float(height_z)))
+
+    # 물리 엔진 속성 부여
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    meshCollision = UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim())
+    meshCollision.GetApproximationAttr().Set("convexHull")
+
+    # [수정됨] 밝고 반짝이는 은색 메탈(쇳덩이) 느낌의 색상 적용
+    mesh.GetDisplayColorAttr().Set([Gf.Vec3f(0.8, 0.82, 0.85)])
+
+    return mesh
 
 def main():
-    print("-> 뷰포트 창 생성 및 스테이지 초기화 중...")
     omni.usd.get_context().new_stage()
     
     simulation_app.update()
@@ -173,7 +212,7 @@ def main():
                     ("Tick.outputs:tick", "Conveyor.inputs:onStep"),
                 ],
                 keys.SET_VALUES: [
-                    ("Conveyor.inputs:velocity", 0.30),
+                    ("Conveyor.inputs:velocity", 0.40),
                     # 방향을 유지합니다.
                     ("Conveyor.inputs:direction", [1.0, 0.0, 0.0]), 
                 ]
@@ -205,25 +244,50 @@ def main():
     world.add_decider_network(decider_network)
 
     # ==================================================================
-    # [물리 Stopper] 컨베이어 끝에서 박스가 보고대 쪽으로 더 밀리지 않게 막기
+    # [물리 Stopper 및 일체형 직각삼각기둥 정렬 가이드]
     # ==================================================================
+    STOPPER_Y = 0.38; STOPPER_Z = -0.48; GUIDE_Z = 0.79
+    stage = omni.usd.get_context().get_stage()
 
-    STOPPER_Y = 0.38       # 박스가 멈출 Y 위치. 너무 앞이면 키우고, 너무 늦으면 줄이세요.
-    STOPPER_Z = -0.48      # 컨베이어 롤러보다 약간 위
-    STOPPER_WIDTH_X = 0.035 # 컨베이어 폭 방향
-    STOPPER_THICK_Y = 0.6
-    STOPPER_HEIGHT_Z = 0.18
-
+    # 1. 엔드 스토퍼 (가장 끝에서 막아주는 역할)
     end_stopper = world.scene.add(
         FixedCuboid(
             prim_path="/World/StraightConveyor/EndStopper",
             name="conveyor_end_stopper",
             position=np.array([0.0, STOPPER_Y, STOPPER_Z]),
-            scale=np.array([STOPPER_WIDTH_X, STOPPER_THICK_Y, STOPPER_HEIGHT_Z]),
+            scale=np.array([0.035, 1.0, 0.18]),
+        )
+    )
+    end_guide = world.scene.add(
+        FixedCuboid(
+            prim_path="/World/StraightConveyor/EndGuide",
+            name="conveyor_end_guide",
+            position=np.array([0.0, STOPPER_Y + 0.1, STOPPER_Z + 0.095]),
+            scale=np.array([0.24, 1.0, 0.01]),
         )
     )
 
-    print("-> [성공] 컨베이어 끝단 EndStopper 추가 완료")
+    # 2. 오른쪽 직각삼각기둥 가이드
+    create_wedge_guide(
+        stage=stage,
+        prim_path="/World/StraightConveyor/GuideWedgeRight",
+        position=Gf.Vec3d(-0.2, 0.5, GUIDE_Z), # 직각 꼭짓점의 위치
+        width_x=-0.8,                            # X축(중앙)으로 튀어나올 폭
+        length_y=-0.3,                           # Y축(상자 들어오는 쪽)으로 뻗을 길이
+        height_z=0.01                            # 가이드의 높이
+    )
+
+    # 3. 왼쪽 직각삼각기둥 가이드
+    create_wedge_guide(
+        stage=stage,
+        prim_path="/World/StraightConveyor/GuideWedgeLeft",
+        position=Gf.Vec3d(-0.2, -0.5, GUIDE_Z),  # 직각 꼭짓점의 위치
+        width_x=-0.8,                            # X축(중앙)으로 튀어나올 폭 (반대니까 음수)
+        length_y=0.3,                            # Y축(상자 들어오는 쪽)으로 뻗을 길이
+        height_z=0.01                            # 가이드의 높이
+    )
+    
+    print("-> [성공] 진짜 직각삼각기둥(Wedge) 형태의 깔끔한 쇳덩이 가이드 설치 완료")
 
     world.reset()
     world.reset_cortex()
